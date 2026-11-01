@@ -287,9 +287,11 @@ def main():
     # 有 gh 且指定了仓库 → 自动写入；否则统一走「指引 + 起止标记 + token」，
     # 保证无论是终端跑 .py 还是双击 exe，输出结构一致、都能照着做
     if gh_repo and shutil.which("gh") is not None:
-        # 明文 token 只作为 stdin 传给 gh，不出现在命令行与进程列表中
+        # 明文 token 只作为 stdin 传给 gh，不出现在命令行与进程列表中。
+        # 注意：不能写成 "--body -"，gh 的 --body 是字面量，会把 secret 存成 "-"；
+        # 不传 --body 时 gh 才从 stdin 读值。
         proc = subprocess.run(
-            ["gh", "secret", "set", "WB_ACCESS_TOKEN", "--repo", gh_repo, "--body", "-"],
+            ["gh", "secret", "set", "WB_ACCESS_TOKEN", "--repo", gh_repo],
             input=token.encode("utf-8"),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
