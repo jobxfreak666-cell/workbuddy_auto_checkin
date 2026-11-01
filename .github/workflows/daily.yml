@@ -26,8 +26,22 @@ concurrency:
 
 jobs:
   daily:
+    # 多账号：一个账号一个 job。matrix 只做「Secret 名 → 账号标签」的映射，
+    # 加账号 = 在 include 里加一行 + 在仓库 Secrets 里加同名 Secret。
+    # 没配 Secret 的账号会在下面直接跳过，不会让整次运行失败。
+    name: 每日自动化 · ${{ matrix.label }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      # 串行执行：两个账号依次跑，避免同时打同一个接口
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        include:
+          - secret: WB_ACCESS_TOKEN
+            label: Kopite_
+          - secret: WB_ACCESS_TOKEN_2
+            label: kop
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
@@ -48,12 +62,17 @@ jobs:
       - name: 执行签到与派猫猫
         id: run
         env:
-          WB_ACCESS_TOKEN: ${{ secrets.WB_ACCESS_TOKEN }}
+          WB_ACCESS_TOKEN: ${{ secrets[matrix.secret] }}
+          WB_ACCOUNT_LABEL: ${{ matrix.label }}
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           WB_ENDPOINT: https://copilot.tencent.com
           WB_RESULT_FILE: ${{ runner.temp }}/wb_result.json
         run: |
           set -uo pipefail
+          if [ -z "${WB_ACCESS_TOKEN:-}" ]; then
+            echo "::notice::未配置 Secret ${{ matrix.secret }}，跳过账号 ${{ matrix.label }}。"
+            exit 0
+          fi
           PY="${{ steps.py.outputs.python_path }}"
           set +e
           "$PY" wb_auto.py
@@ -74,7 +93,7 @@ jobs:
         run: |
           set -uo pipefail
           {
-            echo "### Buddy 加油站每日自动化"
+            echo "### Buddy 加油站每日自动化 · ${{ matrix.label }}"
             echo ""
             echo "- 运行时间：$(date -u '+%Y-%m-%d %H:%M:%S UTC')（cron 为 UTC）"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -82,5 +101,5 @@ jobs:
             cat "$RESULT_FILE" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "- 未产出结论文案，请查看上方日志" >> "$GITHUB_STEP_SUMMARY"
+            echo "- 未产出结论文案（可能该账号未配置 Secret），请查看上方日志" >> "$GITHUB_STEP_SUMMARY"
           fi

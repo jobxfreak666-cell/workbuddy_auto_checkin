@@ -9,6 +9,8 @@
     python refresh_token.py                       # 打印 token + 手动配置指引
     python refresh_token.py --gh-repo OWNER/REPO  # 有 gh CLI 时直接写入 Secret
                                                   # 没有 gh 则打印 token + 手动配置指引
+    python refresh_token.py --gh-repo OWNER/REPO --secret-name WB_ACCESS_TOKEN_2
+                                                  # 多账号：写到指定名字的 Secret
 （打包成 refresh_token.exe 后用法相同，双击运行等价于无参数形式）
 
 安全约定：
@@ -29,6 +31,9 @@ AUTH_TIMEOUT = 30.0
 INPUT_LIMIT = 65536
 OUTPUT_LIMIT = 65536
 TOKEN_RE = re.compile(r"[A-Za-z0-9._~+/-]+=*")
+# GitHub Secret 名单（大写字母、数字、下划线）。支持多账号时可指定 WB_ACCESS_TOKEN_2 等。
+SECRET_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,99}")
+DEFAULT_SECRET_NAME = "WB_ACCESS_TOKEN"
 
 # 固定代码只出现在 argv；加密信封走 stdin，构建材料不出本进程。
 # 仅支持 sym-v1 / field / suite 1。
@@ -262,9 +267,15 @@ def normalize_repo(value):
 
 def main():
     gh_repo = None
+    secret_name = DEFAULT_SECRET_NAME
     args = sys.argv[1:]
     if "--gh-repo" in args:
         gh_repo = normalize_repo(args[args.index("--gh-repo") + 1])
+    if "--secret-name" in args:
+        secret_name = args[args.index("--secret-name") + 1].strip().upper()
+        if not SECRET_NAME_RE.fullmatch(secret_name):
+            raise SystemExit("Secret 名称只能由大写字母、数字、下划线组成，收到：%s"
+                             % args[args.index("--secret-name") + 1])
 
     auth_file = find_auth_file()
     if not auth_file:
@@ -291,13 +302,13 @@ def main():
         # 注意：不能写成 "--body -"，gh 的 --body 是字面量，会把 secret 存成 "-"；
         # 不传 --body 时 gh 才从 stdin 读值。
         proc = subprocess.run(
-            ["gh", "secret", "set", "WB_ACCESS_TOKEN", "--repo", gh_repo],
+            ["gh", "secret", "set", secret_name, "--repo", gh_repo],
             input=token.encode("utf-8"),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         if proc.returncode != 0:
             raise SystemExit("写入 GitHub Secret 失败：" + proc.stderr.decode("utf-8", "replace"))
-        print("已写入 GitHub Secret WB_ACCESS_TOKEN（仓库 %s）" % gh_repo)
+        print("已写入 GitHub Secret %s（仓库 %s）" % (secret_name, gh_repo))
         return
 
     if gh_repo:
@@ -306,11 +317,11 @@ def main():
     print("  1) 复制下方两个标记之间的 token")
     if gh_repo:
         print("  2) 打开 https://github.com/%s/settings/secrets/actions/new" % gh_repo)
-        print("  3) Name 填 WB_ACCESS_TOKEN，Secret 粘贴 token，保存")
+        print("  3) Name 填 %s，Secret 粘贴 token，保存" % secret_name)
         print("如需自动写入，安装 gh CLI（https://cli.github.com/）后执行 gh auth login")
     else:
         print("  2) GitHub Actions 版：你仓库的 Settings → Secrets and variables → Actions，"
-             "新建 WB_ACCESS_TOKEN 并粘贴")
+             "新建 %s 并粘贴" % secret_name)
         print("     WPS 金山文档版：「签到自动化」表的 B1 单元格粘贴")
     print("\n----- 以下为 token -----")
     print(token)

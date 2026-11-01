@@ -9,6 +9,7 @@
   4. 猫猫失败不污染签到结论 —— 签到成功即整体成功。
 
 凭证来自 GitHub Secret（由本机 refresh_token.py 注入），只读环境变量，不落盘、不打日志。
+可选环境变量 WB_ACCOUNT_LABEL：多账号时填账号标签，飞书卡片标题会带上它以便区分。
 """
 
 import json
@@ -363,6 +364,9 @@ def main():
     token = os.environ.get("WB_ACCESS_TOKEN")
     webhook = os.environ.get("FEISHU_WEBHOOK")
     endpoint = os.environ.get("WB_ENDPOINT") or DEFAULT_ENDPOINT
+    # 多账号时用标签区分飞书卡片；单账号不设置则保持原标题
+    label = (os.environ.get("WB_ACCOUNT_LABEL") or "").strip()
+    title = ("每日自动化 · %s" % label) if label else "每日自动化"
 
     if not token:
         log("缺少环境变量 WB_ACCESS_TOKEN（请在本机运行 refresh_token.py 注入 GitHub Secret）")
@@ -397,9 +401,10 @@ def main():
     # 推送状态与业务结论分开呈现：失败原因可诊断，但不污染签到结论
     push_ok, push_reason = None, "未配置（缺少 FEISHU_WEBHOOK，本次不推送）"
     if webhook:
-        push_ok, push_reason = push_feishu(webhook, "每日自动化", checkin_line, buddy_line, overall_ok)
+        push_ok, push_reason = push_feishu(webhook, title, checkin_line, buddy_line, overall_ok)
 
     result = {
+        "account_label": label,
         "checkin": {"ok": checkin_ok, **checkin},
         "buddy": {k: v for k, v in buddy.items() if k != "notes"},
         "push": {"ok": push_ok, "reason": push_reason},
