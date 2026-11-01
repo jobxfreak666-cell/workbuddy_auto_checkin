@@ -159,6 +159,7 @@ python refresh_token.py
 | 变量 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `WB_ACCESS_TOKEN` | 是 | — | 访问令牌。缺失则直接退出（exit 2） |
+| `WB_ACCOUNT_LABEL` | 否 | — | 多账号时的账号标签，会拼进飞书卡片标题（`每日自动化 · 标签`）；不设则用原标题 |
 | `FEISHU_WEBHOOK` | 建议 | — | 飞书自定义机器人地址。缺失则不推送，仅打印日志 |
 | `WB_ENDPOINT` | 否 | `https://copilot.tencent.com` | 接口地址 |
 | `WB_RESULT_FILE` | 否 | — | 写入 Markdown 汇总表，供 Actions 的 step summary 使用 |
@@ -171,6 +172,33 @@ python refresh_token.py
 | `WORKBUDDY_EXE` | 覆盖客户端可执行文件路径。自动探测失败时使用 |
 
 凭据文件按 `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info` 探测；客户端按 `WORKBUDDY_EXE` → `%LOCALAPPDATA%\Programs\WorkBuddy\WorkBuddy.exe` → 常见盘根目录 → 注册表 `DisplayIcon` 的顺序探测。
+
+## 多账号（可选）
+
+一个仓库可以同时跑多个 WorkBuddy 账号，每个账号一条飞书卡片：
+
+1. **每个账号一条 Secret**：`WB_ACCESS_TOKEN`、`WB_ACCESS_TOKEN_2`……名字随意，只要和 `daily.yml` 里 `matrix.include` 的 `secret` 对得上。
+2. **在 `.github/workflows/daily.yml` 的 `matrix.include` 里加一项**：
+
+   ```yaml
+       matrix:
+         include:
+           - secret: WB_ACCESS_TOKEN
+             label: 主号
+           - secret: WB_ACCESS_TOKEN_2
+             label: 小号
+   ```
+
+   `label` 会出现在飞书卡片标题和 Actions 的 job 名里，用来区分账号；`max-parallel: 1` 保证两个账号串行跑。
+3. **刷新 token 时指定写到哪条 Secret**：客户端一次只登录一个账号，所以先切到目标账号，再执行
+
+   ```
+   python refresh_token.py --gh-repo OWNER/REPO --secret-name WB_ACCESS_TOKEN_2
+   ```
+
+   不传 `--secret-name` 时默认写 `WB_ACCESS_TOKEN`。`refresh_token.exe` 同理。
+
+没配 Secret 的账号会被自动跳过（日志里是「未配置 Secret …，跳过账号 …」），不会让整次运行失败。
 
 ## 行为矩阵
 
