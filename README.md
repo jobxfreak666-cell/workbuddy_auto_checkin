@@ -160,6 +160,9 @@ python refresh_token.py
 | --- | --- | --- | --- |
 | `WB_ACCESS_TOKEN` | 是 | — | 访问令牌。缺失则直接退出（exit 2） |
 | `WB_ACCOUNT_LABEL` | 否 | — | 多账号时的账号标签，会拼进飞书卡片标题（`每日自动化 · 标签`）；不设则用原标题 |
+| `WB_ACCOUNT_SECRET` | 否 | `WB_ACCESS_TOKEN` | 该账号 token 存放的 Secret 名，只用于拼「续期命令」提示文本 |
+| `WB_GH_REPO` | 否 | — | 仓库全名，只用于拼「续期命令」提示文本 |
+| `WB_TOKEN_REMIND_DAYS` | 否 | `2` | token 剩余天数 ≤ 该值时，额外推一张续期提醒卡（每天早/中/晚各一次，即每个 cron 时段一次） |
 | `FEISHU_WEBHOOK` | 建议 | — | 飞书自定义机器人地址。缺失则不推送，仅打印日志 |
 | `WB_ENDPOINT` | 否 | `https://copilot.tencent.com` | 接口地址 |
 | `WB_RESULT_FILE` | 否 | — | 写入 Markdown 汇总表，供 Actions 的 step summary 使用 |
@@ -199,6 +202,17 @@ python refresh_token.py
    不传 `--secret-name` 时默认写 `WB_ACCESS_TOKEN`。`refresh_token.exe` 同理。
 
 没配 Secret 的账号会被自动跳过（日志里是「未配置 Secret …，跳过账号 …」），不会让整次运行失败。
+
+## token 到期提醒
+
+Token 约 28 天有效，过期后签到会返回 401。脚本会从 token 自身解出到期时间（只解码 JWT，不验签），剩余天数 ≤ `WB_TOKEN_REMIND_DAYS`（默认 2 天）时，在正常签到卡片之外**再单独推一张续期提醒卡**：
+
+- 三个 cron 时段（北京时间 08:10 / 14:10 / 20:10）各推一次，也就是早/中/晚各提醒一次；
+- 已过期则每次都提醒，直到注入新 token；
+- 卡片里直接带账号、到期时间、剩余天数，以及该账号对应的续期命令（`--secret-name` 已按 `matrix.secret` 填好）；
+- 提醒推送失败不影响签到结论与退出码。
+
+想立刻验证提醒卡片长什么样，可以在 Actions 页手动运行一次，把 `token_remind_days` 输入填成一个很大的值（如 `999`），即可强制触发提醒。
 
 ## 行为矩阵
 

@@ -12,6 +12,7 @@
 可选环境变量 WB_ACCOUNT_LABEL：多账号时填账号标签，飞书卡片标题会带上它以便区分。
 """
 
+import base64
 import json
 import os
 import ssl
@@ -326,6 +327,32 @@ def push_feishu(webhook, title, checkin_line, buddy_line, overall_ok):
             "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}],
         },
     }
+    return _post_feishu(webhook, payload)
+
+
+def push_feishu_card(webhook, header_title, template, lines):
+    """推一张自定义卡片（用于 token 到期提醒等附加通知）。返回 (ok, reason)。"""
+    payload = {
+        "msg_type": "interactive",
+        "card": {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "template": template,
+                "title": {"tag": "plain_text", "content": header_title},
+            },
+            "elements": [{"tag": "div", "text": {"tag": "lark_md",
+                                                "content": "\n".join(lines)}}],
+        },
+    }
+    return _post_feishu(webhook, payload)
+
+
+def _post_feishu(webhook, payload):
+    """带重试地 POST 一个飞书消息体。返回 (ok, reason)。
+
+    重试策略：网络异常 / HTTP 5xx → 退避重试（最多 MAX_RETRY 次）；
+    飞书业务码非 0 → 不重试（配置问题，重试无用），返回可诊断原因。
+    """
     data = json.dumps(payload).encode("utf-8")
     attempt = 0
     while True:
@@ -358,6 +385,100 @@ def push_feishu(webhook, title, checkin_line, buddy_line, overall_ok):
             return False, "重试 %d 次后仍异常：%s: %s" % (MAX_RETRY, type(e).__name__, e)
 
 
+# ---------------------------------------------------------- token 有效期提醒
+
+DEFAULT_TOKEN_REMIND_DAYS = 2.0
+DEFAULT_GH_REPO = "jobxfreak666-cell/workbuddy_auto_checkin"
+
+
+def token_expiry(token):
+    """从 JWT 里读出 exp 时间戳（只解码，不验签）。读不到返回 None。"""
+    try:
+        part = token.split(".")[1]
+    except (AttributeError, IndexError):
+        return None
+    try:
+        part += "=" * (-len(part) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(part.encode("ascii")))
+    except (ValueError, UnicodeError, TypeError):
+        return None
+    exp = claims.get("exp") if isinstance(claims, dict) else None
+    return int(exp) if isinstance(exp, (int, float)) else None
+
+
+def remind_days_setting():
+    """读取提前提醒天数阈值，默认 2 天（覆盖 28 天有效期下的第 27 天）。"""
+    raw = (os.environ.get("WB_TOKEN_REMIND_DAYS") or "").strip()
+    if not raw:
+        return DEFAULT_TOKEN_REMIND_DAYS
+    try:
+        value = float(raw)
+    except ValueError:
+        log("WB_TOKEN_REMIND_DAYS=%r 不是数字，按默认 %.0f 天处理" % (raw, DEFAULT_TOKEN_REMIND_DAYS))
+        return DEFAULT_TOKEN_REMIND_DAYS
+    return value if value >= 0 else DEFAULT_TOKEN_REMIND_DAYS
+
+
+def check_token_expiry(token, webhook, label, threshold_days):
+    """token 快到期（或已过期）时单独推一张飞书续期提醒卡。
+
+    每天早/中/晚各一次，靠三个 cron 时段天然实现（同一轮只会提醒一次）；
+    只在剩余天数 ≤ threshold_days 时提醒，平时不打扰；已过期则每次都提醒。
+    返回 dict，写进 RESULT_JSON 与 step summary。
+    """
+    exp = token_expiry(token)
+    if exp is None:
+        return {"ok": None, "days_left": None, "reminded": False,
+                "reason": "token 不是 JWT 或无法解析 exp，跳过有效期提醒"}
+
+    now = int(time.time())
+    days_left = (exp - now) / 86400.0
+    # runner 时区是 UTC，这里统一按北京时间展示，避免「到期时间」看着差 8 小时
+    expires_at = time.strftime("%Y-%m-%d %H:%M", time.gmtime(exp + 8 * 3600)) + "（北京时间）"
+    info = {"expires_at": expires_at, "days_left": round(days_left, 1),
+            "threshold_days": threshold_days, "reminded": False, "reason": ""}
+
+    if days_left > threshold_days:
+        info["reason"] = "剩余 %.1f 天，超过阈值 %.1f 天，本次不提醒" % (days_left, threshold_days)
+        return info
+
+    if days_left <= 0:
+        state, template = "已过期", "red"
+        left_text = "已过期约 %.0f 小时" % max(1.0, -days_left * 24)
+    elif days_left < 1:
+        state, template = "即将过期", "orange"
+        left_text = "不到 1 天"
+    else:
+        state, template = "即将过期", "orange"
+        left_text = "约 %d 天" % int(days_left)
+
+    secret_name = (os.environ.get("WB_ACCOUNT_SECRET") or "").strip() or "WB_ACCESS_TOKEN"
+    gh_repo = (os.environ.get("WB_GH_REPO") or "").strip() or DEFAULT_GH_REPO
+    who = label or "默认账号"
+    lines = [
+        "**账号**：%s（Secret `%s`）" % (who, secret_name),
+        "**到期时间**：%s" % expires_at,
+        "**剩余时间**：%s" % left_text,
+        "",
+        "**续期方法**（电脑上操作，约 1 分钟）：",
+        "1. 打开 WorkBuddy 客户端，切到 %s 并确认是在线状态；" % who,
+        "2. 进入项目目录 `workbuddy_auto_checkin` 运行：",
+        "`python refresh_token.py --gh-repo %s --secret-name %s`" % (gh_repo, secret_name),
+        "3. 看到提示 Secret 已更新即可，下一轮定时任务自动生效。",
+    ]
+    header = "⏰ WorkBuddy 登录态%s · %s" % (state, who)
+
+    if not webhook:
+        info["reason"] = "缺少 FEISHU_WEBHOOK，未推送续期提醒"
+        return info
+
+    ok, reason = push_feishu_card(webhook, header, template, lines)
+    info.update({"ok": ok, "reminded": ok,
+                 "reason": "已推送续期提醒" if ok
+                           else "续期提醒推送失败：%s" % reason})
+    return info
+
+
 # ---------------------------------------------------------------- 主流程
 
 def main():
@@ -381,17 +502,29 @@ def main():
         "User-Agent": "WorkBuddy",
     }
 
-    log("=== 1/2 签到 ===")
+    log("=== 1/3 签到 ===")
     checkin_ok, checkin = run_checkin(headers, endpoint)
     log("  结论：%s" % checkin["report"])
 
     # 猫猫独立 try：任何异常都不影响签到结论
-    log("=== 2/2 猫猫旅行 ===")
+    log("=== 2/3 猫猫旅行 ===")
     try:
         buddy = run_buddy(headers, endpoint)
     except Exception as e:
         buddy = {"result": "ERROR", "report": "猫猫模块异常（%s: %s）" % (type(e).__name__, e)}
     log("  结论：%s" % buddy.get("report", ""))
+
+    # token 到期提醒独立成段：不影响签到结论，失败也不改变退出码
+    log("=== 3/3 登录态有效期 ===")
+    try:
+        token_info = check_token_expiry(token, webhook, label, remind_days_setting())
+    except Exception as e:
+        token_info = {"ok": None, "days_left": None, "reminded": False,
+                      "reason": "有效期检查异常（%s: %s）" % (type(e).__name__, e)}
+    if token_info.get("reminded"):
+        log("  结论：已推送续期提醒（剩余 %s 天）" % token_info.get("days_left"))
+    else:
+        log("  结论：%s" % token_info.get("reason", ""))
 
     # 整体成败只看签到：签到成功即成功
     overall_ok = checkin_ok
@@ -407,6 +540,7 @@ def main():
         "account_label": label,
         "checkin": {"ok": checkin_ok, **checkin},
         "buddy": {k: v for k, v in buddy.items() if k != "notes"},
+        "token": token_info,
         "push": {"ok": push_ok, "reason": push_reason},
         "overall_ok": overall_ok,
     }
@@ -418,10 +552,17 @@ def main():
         try:
             push_line = ("✅ 已推送到飞书" if push_ok
                          else "❌ 推送失败：%s" % push_reason)
+            if token_info.get("days_left") is None:
+                token_line = "未解析（%s）" % token_info.get("reason", "")
+            else:
+                token_line = "%s 到期（还剩 %.1f 天）%s" % (
+                    token_info["expires_at"], token_info["days_left"],
+                    "，已推续期提醒" if token_info.get("reminded") else "")
             with open(result_file, "w", encoding="utf-8") as f:
                 f.write("| 项目 | 结论 |\n| --- | --- |\n")
                 f.write("| 签到 | %s |\n" % checkin_line)
                 f.write("| 猫猫旅行 | %s |\n" % buddy_line)
+                f.write("| Token 有效期 | %s |\n" % token_line)
                 f.write("| 飞书推送 | %s |\n" % push_line)
                 f.write("| 整体 | %s |\n" % ("成功（签到已达成）" if overall_ok else "失败（签到未达成）"))
         except OSError as e:

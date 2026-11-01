@@ -16,6 +16,11 @@ on:
     - cron: "10 6 * * *"    # 06:10 UTC = 14:10 北京（备份）
     - cron: "10 12 * * *"   # 12:10 UTC = 20:10 北京（备份）
   workflow_dispatch:
+    inputs:
+      token_remind_days:
+        description: "临时用：token 到期提醒阈值（天），留空则用默认 2"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -64,6 +69,11 @@ jobs:
         env:
           WB_ACCESS_TOKEN: ${{ secrets[matrix.secret] }}
           WB_ACCOUNT_LABEL: ${{ matrix.label }}
+          WB_ACCOUNT_SECRET: ${{ matrix.secret }}
+          WB_GH_REPO: ${{ github.repository }}
+          # token 快到期时单独推一张续期提醒卡：同一时段只推一次，三个 cron 时段
+          # 就是「早/中/晚各一次」。默认提前 2 天（28 天有效期的第 26～28 天）。
+          WB_TOKEN_REMIND_DAYS: ${{ github.event.inputs.token_remind_days || 2 }}
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           WB_ENDPOINT: https://copilot.tencent.com
           WB_RESULT_FILE: ${{ runner.temp }}/wb_result.json
